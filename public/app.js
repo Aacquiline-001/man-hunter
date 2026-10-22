@@ -8,13 +8,20 @@
   };
 
   // ---------- identity ----------
-  let pid = store.get('pursuit.pid');
-  if (!pid) { pid = 'p-' + Math.random().toString(36).slice(2, 11); store.set('pursuit.pid', pid); }
+  // Per-tab identity: sessionStorage survives a refresh but isn't shared between tabs,
+  // so every tab/phone is its own player.
+  const tab = {
+    get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { sessionStorage.setItem(k, v); } catch {} },
+    del(k) { try { sessionStorage.removeItem(k); } catch {} },
+  };
+  let pid = tab.get('pursuit.pid');
+  if (!pid) { pid = 'p-' + Math.random().toString(36).slice(2, 11) + Date.now().toString(36); tab.set('pursuit.pid', pid); }
   $('nameInput').value = store.get('pursuit.name') || '';
   const urlCode = new URLSearchParams(location.search).get('code');
   if (urlCode) $('codeInput').value = urlCode.toUpperCase();
 
-  const socket = io();
+  const socket = io({ transports: ['websocket'], upgrade: false });
   let S = null;             // latest state from server
   let clockSkew = 0;        // serverNow - clientNow
   let lastLogId = 0;
@@ -29,7 +36,7 @@
   const ago = t => {
     const s = Math.max(0, Math.round((now() - t) / 1000));
     if (s < 15) return 'just now';
-    if (s < 60) return `${s}s ago`;
+    if (s < 60) return `${Math.floor(s / 10) * 10}s ago`;
     return `${Math.floor(s / 60)} min ago`;
   };
   function toast(text, red) {
@@ -49,7 +56,7 @@
   }
 
   // ---------- map ----------
-  const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([9.9312, 76.2673], 16); // Kochi default
+  const map = L.map('map', { zoomControl: false, attributionControl: true, preferCanvas: true, fadeAnimation: false, markerZoomAnimation: true }).setView([9.9312, 76.2673], 16); // Kochi default
   // Tile sources in order of preference. If one fails (bad/missing key, blocked), fall back to the next.
   const mtKey = (window.PURSUIT_CONFIG || {}).maptilerKey;
   const SOURCES = [];
@@ -64,7 +71,7 @@
     if (tileLayer) map.removeLayer(tileLayer);
     tileIdx = i;
     let errors = 0, loaded = 0;
-    tileLayer = L.tileLayer(SOURCES[i].url, SOURCES[i].opts).addTo(map);
+    tileLayer = L.tileLayer(SOURCES[i].url, { ...SOURCES[i].opts, updateWhenIdle: true, keepBuffer: 1 }).addTo(map);
     tileLayer.on('tileload', () => loaded++);
     tileLayer.on('tileerror', () => {
       errors++;
@@ -100,7 +107,7 @@
   }
 
   // ---------- location (GPS or simulated) ----------
-  let myPos = null, gpsWatch = null, simTarget = null;
+  let myPos = null, gpsWatch = null, simTarget = null, lastGpsSend = 0;
   function sendLoc() { if (myPos && S) socket.emit('loc', myPos); }
   function startGPS() {
     if (!navigator.geolocation) { toast('GPS not available here — tap the map to move'); return; }
@@ -108,6 +115,8 @@
     gpsWatch = navigator.geolocation.watchPosition(p => {
       myPos = { lat: p.coords.latitude, lng: p.coords.longitude };
       simTarget = null;
+      if (Date.now() - lastGpsSend < 1000) { render(); return; }
+      lastGpsSend = Date.now();
       if (!centred) { map.setView([myPos.lat, myPos.lng], 17); centred = true; }
       sendLoc(); render();
     }, err => {
@@ -136,8 +145,10 @@
     const d = distM(myPos, simTarget);
     if (d <= step) { myPos = { ...simTarget }; simTarget = null; }
     else { const f = step / d; myPos = { lat: myPos.lat + (simTarget.lat - myPos.lat) * f, lng: myPos.lng + (simTarget.lng - myPos.lng) * f }; }
-    sendLoc(); render();
+    render();
+    const t = Date.now(); if (t - lastSimSend >= 1000) { lastSimSend = t; sendLoc(); }
   }, 250);
+  let lastSimSend = 0;
 
   let tapMode = 'zone';
   map.on('click', e => {
@@ -158,7 +169,7 @@
   function name() { const n = $('nameInput').value.trim() || 'Player'; store.set('pursuit.name', n); return n; }
   $('createBtn').onclick = () => socket.emit('create', { name: name(), pid }, res => {
     if (res?.error) return ($('homeErr').textContent = res.error);
-    store.set('pursuit.room', res.code);
+    tab.set('pursuit.room', res.code);
     if (!store.get('pursuit.seenIntro')) openIntro();
   });
   $('joinBtn').onclick = () => {
@@ -166,7 +177,7 @@
     if (code.length !== 4) return ($('homeErr').textContent = 'Enter the 4-letter code');
     socket.emit('join', { code, name: name(), pid }, res => {
       if (res?.error) return ($('homeErr').textContent = res.error);
-      store.set('pursuit.room', res.code);
+      tab.set('pursuit.room', res.code);
       if (!store.get('pursuit.seenIntro')) openIntro();
     });
   };
@@ -175,15 +186,15 @@
 
   // reconnect to a room after refresh
   socket.on('connect', () => {
-    const code = store.get('pursuit.room');
-    if (code) socket.emit('join', { code, name: name(), pid }, res => { if (res?.error) { store.del('pursuit.room'); showHome(); } });
+    const code = tab.get('pursuit.room');
+    if (code) socket.emit('join', { code, name: name(), pid }, res => { if (res?.error) { tab.del('pursuit.room'); showHome(); } });
   });
 
   // ---------- lobby controls ----------
   $('roleSeg').onclick = e => { const r = e.target.dataset.role; if (r) socket.emit('role', r); };
   $('tapSeg').onclick = e => { const t = e.target.dataset.tap; if (t) { tapMode = t; render(); } };
   $('radius').oninput = () => {
-    $('radiusVal').textContent = $('radius').value + ' m';
+    txt('radiusVal', $('radius').value + ' m');
     if (S?.zone) socket.emit('zone', { lat: S.zone.lat, lng: S.zone.lng, r: Number($('radius').value) });
   };
   $('botRunner').onclick = () => socket.emit('addBot', 'runner', r => r?.error && toast(r.error, true));
@@ -198,7 +209,7 @@
       else { await navigator.clipboard.writeText(url); toast('Link copied'); }
     } catch {}
   };
-  const leave = () => { socket.emit('leave'); store.del('pursuit.room'); S = null; showHome(); };
+  const leave = () => { socket.emit('leave'); tab.del('pursuit.room'); S = null; showHome(); };
   $('leaveBtn').onclick = leave; $('leaveBtn2').onclick = leave;
   $('againBtn').onclick = () => socket.emit('restart');
 
@@ -238,18 +249,26 @@
   }
 
   // ---------- render ----------
+  const txt = (id, v) => { const el = $(id); if (el.textContent !== v) el.textContent = v; };
+  const show = (id, on) => { const el = $(id); if (el.classList.contains('hidden') === on) el.classList.toggle('hidden', !on); };
+  let renderQueued = false;
   function render() {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => { renderQueued = false; doRender(); });
+  }
+  function doRender() {
     if (!S) return;
     const me = S.players.find(p => p.self);
     if (!me) return;
     const isHost = S.hostId === S.me;
     const playing = S.phase === 'headstart' || S.phase === 'play';
     $('home').classList.add('hidden');
-    $('lobby').classList.toggle('hidden', S.phase !== 'lobby');
-    $('hud').classList.toggle('hidden', !playing);
-    $('controls').classList.toggle('hidden', !playing);
-    $('over').classList.toggle('hidden', S.phase !== 'over');
-    $('holdOverlay').classList.toggle('hidden', !(S.phase === 'headstart' && me.role === 'hunter'));
+    show('lobby', S.phase === 'lobby');
+    show('hud', playing);
+    show('controls', playing);
+    show('over', S.phase === 'over');
+    show('holdOverlay', S.phase === 'headstart' && me.role === 'hunter');
 
     // zone
     if (S.zone) {
@@ -296,7 +315,7 @@
   }
 
   function renderLobby(me, isHost) {
-    $('lobbyCode').textContent = S.code;
+    txt('lobbyCode', S.code);
     $('roleSeg').dataset.roleOn = me.role;
     for (const b of $('roleSeg').children) b.classList.toggle('on', b.dataset.role === me.role);
     for (const b of $('tapSeg').children) b.classList.toggle('on', b.dataset.tap === tapMode);
@@ -304,11 +323,13 @@
     $('startBtn').classList.toggle('hidden', !isHost);
     $('waitTxt').classList.toggle('hidden', isHost);
     $('demoSpeed').checked = S.speed === 6;
-    $('radiusVal').textContent = (S.zone ? S.zone.r : $('radius').value) + ' m';
-    $('zoneHint').textContent = S.zone ? 'Zone set. Tap the map to move it, or drag the slider to resize.' : 'Tap the map to place the zone’s centre.';
+    txt('radiusVal', (S.zone ? S.zone.r : $('radius').value) + ' m');
+    txt('zoneHint', S.zone ? 'Zone set. Tap the map to move it, or drag the slider to resize.' : 'Tap the map to place the zone’s centre.');
     const ps = S.players;
+    const nR = ps.filter(p => p.role === 'runner').length, nH = ps.length - nR;
+    txt('playersHead', `PLAYERS · ${ps.length}  (${nR} runner${nR === 1 ? '' : 's'}, ${nH} hunter${nH === 1 ? '' : 's'})`);
     $('startBtn').disabled = !(S.zone && ps.some(p => p.role === 'runner') && ps.some(p => p.role === 'hunter'));
-    $('playerList').innerHTML = ps.map(p => `
+    const listHtml = ps.map(p => `
       <li class="${p.online ? '' : 'off'}">
         <span class="pd ${p.role}"></span>${esc(p.name)}
         ${p.self ? '<span class="badge">you</span>' : ''}
@@ -316,11 +337,12 @@
         ${p.bot ? '<span class="badge">bot</span>' : ''}
         <span class="role">${p.role}</span>
       </li>`).join('');
+    if ($('playerList')._html !== listHtml) { $('playerList').innerHTML = listHtml; $('playerList')._html = listHtml; }
   }
 
   function renderHud(me) {
     const t = now(), T = S.times;
-    $('roleBadge').textContent = me.role === 'hunter' ? 'HUNTER' : (me.tagged ? 'TAGGED' : 'RUNNER');
+    txt('roleBadge', me.role === 'hunter' ? 'HUNTER' : (me.tagged ? 'TAGGED' : 'RUNNER'));
     $('roleBadge').className = 'tagpill' + (me.role === 'hunter' ? ' hunter' : '');
     const act = $('actionBtn');
     if (me.role === 'hunter') {
@@ -330,23 +352,23 @@
     }
 
     if (S.phase === 'headstart') {
-      $('hudLabel').textContent = 'Head start';
-      $('hudBig').textContent = fmt(T.huntStart - t);
-      $('pingTxt').textContent = '—';
-      $('pingBar').style.width = '0%';
-      $('hudSub').textContent = me.role === 'hunter' ? 'Hold tight — runners are hiding' : 'Scatter and hide!';
-      $('shrinkTxt').textContent = '';
-      $('holdTime').textContent = fmt(T.huntStart - t);
+      txt('hudLabel', 'Head start');
+      txt('hudBig', fmt(T.huntStart - t));
+      txt('pingTxt', '—');
+      $('pingBar').style.transform = 'scaleX(0)';
+      txt('hudSub', me.role === 'hunter' ? 'Hold tight — runners are hiding' : 'Scatter and hide!');
+      txt('shrinkTxt', '');
+      txt('holdTime', fmt(T.huntStart - t));
       $('outsideWarn').classList.add('hidden');
       return;
     }
-    $('hudLabel').textContent = 'Time left';
-    $('hudBig').textContent = fmt(T.endAt - t);
+    txt('hudLabel', 'Time left');
+    txt('hudBig', fmt(T.endAt - t));
     const toPing = T.nextPingAt - t;
-    $('pingTxt').textContent = fmt(toPing);
-    $('pingBar').style.width = Math.min(100, Math.max(0, 100 * (1 - toPing / S.cfg.ping))) + '%';
-    $('hudSub').textContent = 'Hunters see every runner';
-    $('shrinkTxt').textContent = 'Zone shrinks in ' + fmt(T.nextShrinkAt - t);
+    txt('pingTxt', fmt(toPing));
+    $('pingBar').style.transform = `scaleX(${Math.min(1, Math.max(0, 1 - toPing / S.cfg.ping)).toFixed(3)})`;
+    txt('hudSub', 'Hunters see every runner');
+    txt('shrinkTxt', 'Zone shrinks in ' + fmt(T.nextShrinkAt - t));
 
     const w = $('outsideWarn');
     if (me.role === 'runner' && !me.tagged && me.outsideSince) {
