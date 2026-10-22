@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#f2f1ee">
+  <title>Pursuit</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- HOME -->
+  <section id="home" class="screen">
+    <div class="home-inner">
+      <div class="brand"><span class="brand-dot"></span>Pursuit</div>
+      <h1>Hide and seek,<br>on real streets.</h1>
+      <p class="muted">One host draws a zone. Runners hide. Hunters close in.</p>
+      <label class="field"><span>Your name</span><input id="nameInput" maxlength="16" placeholder="e.g. Akku" autocomplete="off"></label>
+      <button id="createBtn" class="btn primary">Host a game</button>
+      <div class="join-row">
+        <input id="codeInput" maxlength="4" placeholder="CODE" autocomplete="off">
+        <button id="joinBtn" class="btn">Join</button>
+      </div>
+      <button id="howBtn" class="link">How to play ›</button>
+      <p id="homeErr" class="err"></p>
+    </div>
+  </section>
+
+  <!-- INTRO / HOW TO PLAY -->
+  <section id="intro" class="screen hidden">
+    <svg id="introArt" viewBox="0 0 360 560" preserveAspectRatio="xMidYMid slice"></svg>
+    <div class="progress" id="introProg"></div>
+    <button class="skip" id="introSkip">Skip</button>
+    <div class="card intro-card">
+      <div class="kicker" id="introKicker"></div>
+      <h2 id="introTitle"></h2>
+      <p id="introSub"></p>
+      <div class="tap">Tap to continue ›</div>
+    </div>
+  </section>
+
+  <!-- HUD (in game) -->
+  <div id="hud" class="hidden">
+    <div class="hud-card">
+      <div class="hud-left">
+        <div class="hud-label" id="hudLabel">Time left</div>
+        <div class="hud-big" id="hudBig">0:00</div>
+      </div>
+      <div class="hud-right">
+        <div class="hud-row"><span class="hud-label">Next ping</span><b id="pingTxt">—</b></div>
+        <div class="bar"><div id="pingBar"></div></div>
+        <div class="hud-sub" id="hudSub"></div>
+      </div>
+    </div>
+    <div class="hud-tags">
+      <span class="tagpill" id="roleBadge">RUNNER</span>
+      <span class="tagpill light" id="shrinkTxt"></span>
+    </div>
+    <div id="outsideWarn" class="warn hidden"></div>
+  </div>
+
+  <div id="holdOverlay" class="hold hidden">
+    <div class="hold-card">
+      <div class="kicker">HEAD START</div>
+      <h2>Hold tight.</h2>
+      <p>Runners are scattering. You’re released in <b id="holdTime">3:00</b>.</p>
+    </div>
+  </div>
+
+  <!-- LOBBY -->
+  <div id="lobby" class="sheet hidden">
+    <div class="sheet-grip"></div>
+    <div class="lobby-head">
+      <div>
+        <div class="kicker">GAME CODE</div>
+        <div class="code" id="lobbyCode">----</div>
+      </div>
+      <button class="btn small" id="shareBtn">Share link</button>
+    </div>
+
+    <div class="seg" id="roleSeg">
+      <button data-role="runner">Runner</button>
+      <button data-role="hunter">Hunter</button>
+    </div>
+
+    <div id="hostBox">
+      <div class="kicker">DRAW THE ZONE</div>
+      <p class="muted small" id="zoneHint">Tap the map to place the zone’s centre.</p>
+      <div class="seg compact" id="tapSeg">
+        <button data-tap="zone">Tap places zone</button>
+        <button data-tap="me">Tap moves me</button>
+      </div>
+      <label class="range"><span>Radius <b id="radiusVal">300 m</b></span>
+        <input type="range" id="radius" min="100" max="1500" step="25" value="300"></label>
+      <div class="row">
+        <button class="btn small" id="botRunner">+ Bot runner</button>
+        <button class="btn small" id="botHunter">+ Bot hunter</button>
+        <button class="btn small ghostbtn" id="clearBots">Clear bots</button>
+      </div>
+      <label class="check"><input type="checkbox" id="demoSpeed"> Demo speed (everything 6× faster)</label>
+    </div>
+
+    <div class="kicker">PLAYERS</div>
+    <ul id="playerList"></ul>
+
+    <button class="btn primary" id="startBtn">Start game</button>
+    <p class="muted small center" id="waitTxt">Waiting for the host to start…</p>
+    <div class="row between">
+      <button class="link" id="locBtnLobby">📍 GPS</button>
+      <button class="link" id="leaveBtn">Leave</button>
+    </div>
+  </div>
+
+  <!-- GAME CONTROLS -->
+  <div id="controls" class="hidden">
+    <button class="chip" id="locBtn">📍 GPS</button>
+    <button class="chip" id="recenterBtn">◎</button>
+    <button class="action" id="actionBtn">TAG</button>
+  </div>
+
+  <!-- GAME OVER -->
+  <div id="over" class="sheet hidden">
+    <div class="kicker" id="overKicker">GAME OVER</div>
+    <h2 id="overTitle">Runners win.</h2>
+    <p class="muted" id="overSub"></p>
+    <button class="btn primary" id="againBtn">Back to lobby</button>
+    <p class="muted small center" id="overWait">Waiting for the host…</p>
+    <button class="link" id="leaveBtn2">Leave game</button>
+  </div>
+
+  <div id="toasts"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
